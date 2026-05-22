@@ -17,11 +17,7 @@ from src.analyzer import (
     get_missing_values,
     get_numeric_summary,
 )
-from src.chart_generator import (
-    generate_categorical_bar_charts,
-    generate_correlation_heatmap,
-    generate_numeric_histograms,
-)
+from src.chart_generator import generate_charts
 from src.config import CHARTS_DIR, REPORTS_DIR
 from src.data_loader import load_csv, validate_dataframe
 from src.insight_generator import generate_report_insights
@@ -61,8 +57,11 @@ def _build_executive_summary(
     numeric_summary: dict,
     categorical_summary: dict,
     report_insights: dict,
+    chart_metadata: list[dict],
+    *,
+    use_ai_summary: bool,
 ) -> dict:
-    """Attempt an AI executive summary, falling back to deterministic text."""
+    """Build an executive summary using AI when requested, otherwise a deterministic analyst brief."""
     context = build_summary_context(
         csv_name=csv_name,
         overview=overview,
@@ -71,32 +70,21 @@ def _build_executive_summary(
         numeric_summary=numeric_summary,
         categorical_summary=categorical_summary,
         report_insights=report_insights,
+        chart_metadata=chart_metadata,
     )
 
-    ai_summary = generate_ai_executive_summary(context)
-    if ai_summary is not None:
-        _info("AI executive summary generated")
-        return ai_summary
+    if use_ai_summary:
+        ai_summary = generate_ai_executive_summary(context)
+        if ai_summary is not None:
+            _info("AI executive summary generated")
+            return ai_summary
+        _info("Using deterministic executive summary (AI unavailable or failed)")
 
-    _info("Using deterministic executive summary (AI unavailable or failed)")
     return get_fallback_summary(context)
 
 
 def run_report(csv_path: str | Path, *, use_ai_summary: bool = False) -> Path:
-    """
-    Run the full CSV analysis and PDF report pipeline.
-
-    Args:
-        csv_path: Path to the input CSV file.
-        use_ai_summary: Whether to include an optional executive summary section.
-
-    Returns:
-        Path to the generated PDF report.
-
-    Raises:
-        FileNotFoundError: If the CSV file does not exist.
-        ValueError: If the CSV file is invalid or empty.
-    """
+    """Run the full CSV analysis and PDF report pipeline."""
     csv_path = Path(csv_path)
 
     _info(f"Loading CSV: {csv_path}")
@@ -126,33 +114,25 @@ def run_report(csv_path: str | Path, *, use_ai_summary: bool = False) -> Path:
     quality = report_insights["quality_score"]
     _info(f"Dataset quality score: {quality['score']}/100 ({quality['rating']})")
 
-    executive_summary = None
-    if use_ai_summary:
-        _info("Generating executive summary...")
-        executive_summary = _build_executive_summary(
-            csv_name=csv_path.name,
-            overview=overview,
-            column_info=column_info,
-            missing_values=missing_values,
-            numeric_summary=numeric_summary,
-            categorical_summary=categorical_summary,
-            report_insights=report_insights,
-        )
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     chart_output_dir = CHARTS_DIR / f"{csv_path.stem}_{timestamp}"
     chart_output_dir.mkdir(parents=True, exist_ok=True)
 
     _info("Generating charts...")
-    chart_paths: list[Path] = []
-    chart_paths.extend(generate_numeric_histograms(df, chart_output_dir))
-    chart_paths.extend(generate_categorical_bar_charts(df, chart_output_dir))
+    chart_metadata = generate_charts(df, chart_output_dir)
+    _info(f"Generated {len(chart_metadata)} chart(s)")
 
-    heatmap_path = generate_correlation_heatmap(df, chart_output_dir)
-    if heatmap_path:
-        chart_paths.append(heatmap_path)
-
-    _info(f"Generated {len(chart_paths)} chart(s)")
+    executive_summary = _build_executive_summary(
+        csv_name=csv_path.name,
+        overview=overview,
+        column_info=column_info,
+        missing_values=missing_values,
+        numeric_summary=numeric_summary,
+        categorical_summary=categorical_summary,
+        report_insights=report_insights,
+        chart_metadata=chart_metadata,
+        use_ai_summary=use_ai_summary,
+    )
 
     report_filename = f"{csv_path.stem}_report_{timestamp}.pdf"
     report_path = REPORTS_DIR / report_filename
@@ -164,11 +144,12 @@ def run_report(csv_path: str | Path, *, use_ai_summary: bool = False) -> Path:
         missing_values=missing_values,
         numeric_summary=numeric_summary,
         categorical_summary=categorical_summary,
-        chart_paths=chart_paths,
+        chart_metadata=chart_metadata,
         output_path=report_path,
         report_insights=report_insights,
         executive_summary=executive_summary,
         generated_at=datetime.now(),
+        df=df,
     )
 
     _success(f"Report saved to: {report_path}")

@@ -9,8 +9,8 @@ Built as a modular, portfolio-ready project demonstrating data validation, deter
 - **CSV loading and validation** — multiple encodings, friendly error messages, non-fatal warnings
 - **Dataset analysis** — overview, missing values, numeric and categorical summaries
 - **Report intelligence** — quality score (0–100), key insights, outlier detection (IQR), correlation highlights
-- **Intelligent charts** — histograms, bar charts, and correlation heatmaps with skip logic for ID-like columns
-- **PDF export** — clean, structured reports with embedded charts
+- **Intelligent charts** — scatterplots, boxplots, and selective bar charts with metadata for future UI builders
+- **PDF export** — KPI cards, executive summary, compact chart layouts, and structured appendix
 - **Optional AI summary** — executive summary via OpenAI using aggregated metadata only
 - **Logging** — detailed run history saved to `logs/app.log`
 
@@ -51,7 +51,8 @@ ai_csv_reporter_clean/
 │   ├── analyzer.py           Dataset analysis
 │   ├── insight_generator.py  Quality scores and insights
 │   ├── ai_summary.py         Optional OpenAI summary
-│   ├── chart_generator.py    Matplotlib charts
+│   ├── column_utils.py       Shared ID/grouping rules
+  ├── chart_generator.py    Matplotlib charts + chart metadata
 │   ├── pdf_report.py         ReportLab PDF export
 │   └── main.py               CLI entry point
 ├── outputs/                  Generated charts and reports (gitignored)
@@ -131,10 +132,15 @@ When `--ai-summary` is enabled, OpenAI receives **only aggregated report metadat
 
 ## Roadmap
 
-- [ ] Web dashboard for upload and report preview
+### Interactive analytics (planned)
+- [ ] Streamlit or lightweight web UI for upload and report preview
+- [ ] Dropdown-based chart builder (X variable, Y variable, grouping variable, chart type)
+- [ ] Drag-and-drop style graph builder inspired by JMP
+- [ ] Export selected charts to PDF from the UI
+
+### Platform enhancements
 - [ ] Batch processing for multiple CSV files
 - [ ] Custom PDF report templates
-- [ ] Additional chart types (box plots, time series)
 - [ ] Export to HTML in addition to PDF
 - [ ] Scheduled report generation
 

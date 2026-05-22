@@ -19,16 +19,9 @@ def build_summary_context(
     numeric_summary: dict[str, dict[str, float | None]],
     categorical_summary: dict[str, dict[str, Any]],
     report_insights: dict[str, Any],
+    chart_metadata: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """
-    Build a safe, aggregated context object for executive summary generation.
-
-    Only summary statistics and report metadata are included. Raw CSV rows
-    are never added to this context.
-
-    Returns:
-        A dictionary of aggregated metadata suitable for AI or fallback summaries.
-    """
+    """Build a safe, aggregated context object for executive summary generation."""
     column_summaries = []
     for column, info in column_info.items():
         summary: dict[str, Any] = {
@@ -38,13 +31,11 @@ def build_summary_context(
             "unique_values": info["unique_values"],
         }
         if column in numeric_summary:
-            stats = numeric_summary[column]
             summary["numeric_stats"] = {
-                key: value for key, value in stats.items() if value is not None
+                key: value for key, value in numeric_summary[column].items() if value is not None
             }
         if column in categorical_summary:
-            cat_stats = categorical_summary[column]
-            summary["top_values"] = cat_stats["top_values"]
+            summary["top_values"] = categorical_summary[column]["top_values"]
         if column in missing_values["columns_with_missing"]:
             summary["missing"] = missing_values["columns_with_missing"][column]
         column_summaries.append(summary)
@@ -55,15 +46,25 @@ def build_summary_context(
             "row_count": overview["row_count"],
             "column_count": overview["column_count"],
             "memory_usage_mb": overview["memory_usage_mb"],
-            "columns": overview["columns"],
         },
-        "column_summaries": column_summaries,
         "quality_score": report_insights["quality_score"],
-        "key_insights": report_insights["key_insights"],
-        "data_warnings": report_insights["data_warnings"],
-        "outlier_summary": report_insights["outlier_summary"],
+        "sample_size_caution": report_insights.get("sample_size_caution"),
         "correlation_highlights": report_insights["correlation_highlights"],
-        "chart_skip_reasons": report_insights.get("chart_skip_reasons", []),
+        "outlier_summary": report_insights["outlier_summary"],
+        "chart_highlights": [
+            {
+                "title": chart["title"],
+                "caption": chart["caption"],
+                "insight_label": chart.get("insight_label", chart["caption"]),
+                "reason_selected": chart["reason_selected"],
+            }
+            for chart in (chart_metadata or [])
+        ],
+        "data_warnings": [
+            warning
+            for warning in report_insights["data_warnings"]
+            if not str(warning).startswith("Sample Size Caution")
+        ],
     }
 
     logger.info("Built executive summary context for %s", csv_name)
@@ -71,50 +72,64 @@ def build_summary_context(
 
 
 def get_fallback_summary(context: dict[str, Any]) -> dict[str, Any]:
-    """
-    Build a deterministic executive summary when AI is unavailable.
-
-    Returns:
-        Executive summary with overview paragraph, takeaways, and optional caution.
-    """
+    """Build a deterministic executive summary when AI is unavailable."""
     overview = context["overview"]
     quality = context["quality_score"]
     row_count = overview["row_count"]
-    column_count = overview["column_count"]
+    chart_highlights = context.get("chart_highlights", [])
 
-    overview_text = (
-        f"This report analyzes '{context['source_file']}', a dataset with "
-        f"{row_count:,} rows and {column_count} columns. "
-        f"The dataset quality score is {quality['score']}/100 ({quality['rating']})."
-    )
+    lead_parts: list[str] = []
+    if row_count < 30:
+        lead_parts.append(
+            f"This is an early read of a compact {row_count:,}-record dataset"
+        )
+    else:
+        lead_parts.append(f"This brief reviews a {row_count:,}-record dataset")
 
-    takeaways = context["key_insights"][:5]
+    if quality["rating"] in {"Fair", "Poor"}:
+        lead_parts.append(f"with {quality['rating'].lower()} data quality ({quality['score']}/100)")
+    else:
+        lead_parts.append(f"with {quality['rating'].lower()} overall data quality")
+
+    if chart_highlights:
+        lead_parts.append(f"and highlights {len(chart_highlights)} visual comparison(s) worth reviewing first")
+    overview_text = ", ".join(lead_parts) + "."
+
+    takeaways: list[str] = []
+    for chart in chart_highlights[:2]:
+        insight = chart.get("insight_label") or chart.get("caption", "")
+        takeaways.append(
+            f"The strongest visual signal is in {chart['title']}: {insight}"
+        )
+
+    correlation = context.get("correlation_highlights", {})
+    strongest = correlation.get("strongest_positive") or correlation.get("strongest_negative")
+    if strongest and len(takeaways) < 3:
+        pair = strongest
+        takeaways.append(
+            f"The most notable numeric pattern is between {pair['column_a']} and {pair['column_b']}, "
+            f"which may be worth validating on a larger sample."
+        )
+
+    if context["data_warnings"] and len(takeaways) < 3:
+        takeaways.append(f"Data quality note: {context['data_warnings'][0]}")
+
     if not takeaways:
         takeaways = [
-            f"The dataset contains {row_count:,} rows across {column_count} columns.",
-            f"Overall data quality is rated {quality['rating']}.",
+            "No major anomalies stood out in the initial review.",
+            "Detailed statistics and charts in this report provide the best next layer of review.",
         ]
 
-    caution = None
-    warnings = [
-        warning
-        for warning in context["data_warnings"]
-        if warning != "No data warnings detected."
-    ]
-    if warnings:
-        caution = warnings[0]
-    elif context["chart_skip_reasons"]:
-        caution = (
-            "Some columns were excluded from charts because they were not suitable "
-            "for visualization."
-        )
+    caution = context.get("sample_size_caution")
+    if not caution and row_count < 30:
+        caution = "Findings should be treated as directional because the sample size is limited."
 
     logger.info("Generated deterministic fallback executive summary")
 
     return {
         "title": "Executive Summary",
         "overview": overview_text,
-        "takeaways": takeaways,
+        "takeaways": takeaways[:4],
         "caution": caution,
         "source": "fallback",
     }
@@ -124,25 +139,28 @@ def _build_prompt(context: dict[str, Any]) -> str:
     """Create the OpenAI prompt from safe aggregated metadata."""
     context_json = json.dumps(context, indent=2, default=str)
 
-    return f"""You are a professional data analyst writing an executive summary for a CSV analytics report.
+    return f"""You are a senior business analyst writing an executive summary for a CSV analytics brief.
 
-Use ONLY the aggregated metadata below. Do not invent facts, rows, or statistics that are not supported by the data.
+Use ONLY the aggregated metadata below. Do not invent facts.
 
-Respond with valid JSON in this exact shape:
+Respond with valid JSON:
 {{
-  "overview": "one short professional paragraph",
-  "takeaways": ["3 to 5 concise bullet points"],
-  "caution": "one caution or limitation sentence, or null if none is relevant"
+  "overview": "2-3 sentence executive overview",
+  "takeaways": ["2 to 4 concise bullets"],
+  "caution": "one limitation sentence or null"
 }}
 
-Requirements:
-- Professional business tone
-- No unsupported claims
-- Reference only provided metrics and insights
-- Keep the overview to 2-4 sentences
-- Provide 3-5 takeaway bullets
+Writing rules:
+- Sound like a business analyst, not a generic AI assistant
+- Focus on what is unusual, useful, or decision-relevant
+- Mention sample size limitations naturally when row_count is under 30
+- Do not repeat chart captions verbatim
+- Do not restate obvious facts like row count and column count unless relevant
+- Avoid filler phrases like "this report analyzes" or "the dataset contains"
+- Use cautious language: appears, may, suggests, likely
+- Do not overclaim causation or certainty
 
-Aggregated report metadata:
+Aggregated metadata:
 {context_json}
 """
 
@@ -152,7 +170,6 @@ def _parse_ai_response(content: str) -> dict[str, Any] | None:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        # Some models wrap JSON in markdown fences; try extracting it.
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if not match:
             return None
@@ -168,8 +185,8 @@ def _parse_ai_response(content: str) -> dict[str, Any] | None:
     if not overview or not isinstance(takeaways, list):
         return None
 
-    cleaned_takeaways = [str(item).strip() for item in takeaways if str(item).strip()][:5]
-    if len(cleaned_takeaways) < 3:
+    cleaned_takeaways = [str(item).strip() for item in takeaways if str(item).strip()][:4]
+    if len(cleaned_takeaways) < 2:
         return None
 
     caution_text = None
@@ -186,13 +203,7 @@ def _parse_ai_response(content: str) -> dict[str, Any] | None:
 
 
 def generate_ai_executive_summary(context: dict[str, Any]) -> dict[str, Any] | None:
-    """
-    Generate an executive summary using OpenAI from aggregated report metadata.
-
-    Returns:
-        AI-generated summary dict, or None if the API key is missing or the
-        request fails. Callers should use get_fallback_summary() when None.
-    """
+    """Generate an executive summary using OpenAI from aggregated report metadata."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         logger.info("AI summary skipped: OPENAI_API_KEY is not set")
@@ -212,13 +223,13 @@ def generate_ai_executive_summary(context: dict[str, Any]) -> dict[str, Any] | N
                 {
                     "role": "system",
                     "content": (
-                        "You write concise executive summaries for data reports. "
+                        "You write concise, analyst-style executive summaries for data reports. "
                         "Respond with JSON only."
                     ),
                 },
                 {"role": "user", "content": _build_prompt(context)},
             ],
-            temperature=0.3,
+            temperature=0.25,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content
