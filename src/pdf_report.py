@@ -299,8 +299,12 @@ def _build_title_page(
     report_timestamp: str,
     styles: dict[str, ParagraphStyle],
     width: float,
+    *,
+    report_title: str | None = None,
+    analyst_name: str | None = None,
 ) -> list[Any]:
     """Build a branded title page."""
+    display_title = report_title.strip() if report_title and report_title.strip() else "Business Intelligence Report"
     header = Table(
         [
             [Paragraph("AI CSV REPORTER", styles["brand"])],
@@ -331,6 +335,10 @@ def _build_title_page(
             ),
         ],
     ]
+    if analyst_name and analyst_name.strip():
+        meta_rows.append(
+            [Paragraph("<b>Prepared by</b>", styles["body"]), Paragraph(analyst_name.strip(), styles["body"])]
+        )
     meta_table = Table(meta_rows, colWidths=[1.1 * inch, width - 1.1 * inch])
     meta_table.setStyle(
         TableStyle(
@@ -344,7 +352,7 @@ def _build_title_page(
     return [
         header,
         Spacer(1, 0.45 * inch),
-        Paragraph("Business Intelligence Report", styles["title"]),
+        Paragraph(display_title, styles["title"]),
         Paragraph("Automated analytics brief with visual insights and quality signals.", styles["subtitle"]),
         Spacer(1, 0.12 * inch),
         _divider(width),
@@ -806,6 +814,8 @@ def create_pdf_report(
     executive_summary: dict[str, Any] | None = None,
     generated_at: datetime | None = None,
     df: Any | None = None,
+    report_title: str | None = None,
+    analyst_name: str | None = None,
 ) -> Path:
     """Build a PDF analytics brief from analysis results and chart metadata."""
     if df is None:
@@ -832,7 +842,17 @@ def create_pdf_report(
     story: list[Any] = []
     content_width = doc.width
 
-    story.extend(_build_title_page(csv_name, overview, report_timestamp, styles, content_width))
+    story.extend(
+        _build_title_page(
+            csv_name,
+            overview,
+            report_timestamp,
+            styles,
+            content_width,
+            report_title=report_title,
+            analyst_name=analyst_name,
+        )
+    )
 
     if report_insights:
         story.extend(

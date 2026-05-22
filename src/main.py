@@ -83,7 +83,13 @@ def _build_executive_summary(
     return get_fallback_summary(context)
 
 
-def run_report(csv_path: str | Path, *, use_ai_summary: bool = False) -> Path:
+def run_report(
+    csv_path: str | Path,
+    *,
+    use_ai_summary: bool = False,
+    report_title: str | None = None,
+    analyst_name: str | None = None,
+) -> Path:
     """Run the full CSV analysis and PDF report pipeline."""
     csv_path = Path(csv_path)
 
@@ -150,6 +156,8 @@ def run_report(csv_path: str | Path, *, use_ai_summary: bool = False) -> Path:
         executive_summary=executive_summary,
         generated_at=datetime.now(),
         df=df,
+        report_title=report_title,
+        analyst_name=analyst_name,
     )
 
     _success(f"Report saved to: {report_path}")

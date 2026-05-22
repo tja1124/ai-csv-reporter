@@ -558,6 +558,16 @@ def generate_charts(df: pd.DataFrame, output_dir: str | Path) -> list[dict[str, 
     return chart_results
 
 
+def get_chart_column_options(df: pd.DataFrame) -> dict[str, Any]:
+    """Return dropdown-ready column lists for interactive chart builders."""
+    return _build_column_options(df)
+
+
+def get_recommended_charts(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return the auto-selected chart plan used by the PDF pipeline."""
+    return plan_charts(df)
+
+
 def get_chart_skip_reasons(df: pd.DataFrame) -> list[str]:
     """Explain why certain visualizations were not selected."""
     reasons: list[str] = []
