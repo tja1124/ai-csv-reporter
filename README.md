@@ -1,108 +1,300 @@
 # AI CSV Reporter
 
-A Python command-line tool that turns CSV files into professional PDF analytics reports. Load a dataset, run automated analysis, generate charts, and export a polished report — with optional AI-assisted executive summaries.
+A professional AI-assisted CSV analytics platform built in Python.
 
-Built as a modular, portfolio-ready project demonstrating data validation, deterministic analytics, visualization, PDF generation, and safe optional AI integration.
+Analyze CSV datasets through either:
+- a modular command-line analytics pipeline
+- or an interactive Streamlit analyst workspace
 
-## Features
+The system automatically validates datasets, generates insights, creates intelligent visualizations, and exports polished PDF analytics reports with optional AI-assisted executive summaries.
 
-- **CSV loading and validation** — multiple encodings, friendly error messages, non-fatal warnings
-- **Dataset analysis** — overview, missing values, numeric and categorical summaries
-- **Report intelligence** — quality score (0–100), key insights, outlier detection (IQR), correlation highlights
-- **Intelligent charts** — scatterplots, boxplots, and selective bar charts with metadata for future UI builders
-- **PDF export** — KPI cards, executive summary, compact chart layouts, and structured appendix
-- **Optional AI summary** — executive summary via OpenAI using aggregated metadata only
-- **Logging** — detailed run history saved to `logs/app.log`
+Built as a portfolio-quality project demonstrating:
+- data engineering fundamentals
+- deterministic analytics
+- visualization intelligence
+- report generation
+- interactive analytics UX
+- safe optional AI integration
 
-## Architecture
+---
 
-The pipeline is function-based and modular. Each module has a single responsibility:
+# Features
 
+## Core Analytics Pipeline
+
+- Robust CSV loading and validation
+  - Multiple encodings supported
+  - Friendly validation errors
+  - Non-fatal warnings
+  - ID-like column detection
+  - Dataset quality scoring
+
+- Dataset analysis
+  - Overview metrics
+  - Missing value analysis
+  - Numeric summaries
+  - Categorical summaries
+  - Correlation analysis
+  - Outlier detection (IQR)
+
+- Deterministic insight generation
+  - Business-oriented findings
+  - Sample-size-aware wording
+  - Data quality warnings
+  - Correlation highlights
+  - Grouped comparison insights
+
+---
+
+## Intelligent Visualization Engine
+
+Automatically selects meaningful charts instead of generating generic plots.
+
+### Supported visualizations
+
+- Scatterplots with trend lines
+- Boxplots for grouped comparisons
+- Selective bar charts
+- Histograms only when statistically useful
+
+### Visualization intelligence
+
+- Correlation-based chart selection
+- ID-column filtering
+- Group-size validation
+- Layout-aware chart planning
+- Chart metadata for future UI builders
+
+---
+
+## Professional PDF Reporting
+
+Exports polished analytics reports with:
+
+- Branded title page
+- KPI summary cards
+- Executive summary
+- Analyst takeaways
+- Intelligent chart layouts
+- Chart insight captions
+- Structured appendix
+- Compact reference tables
+
+---
+
+## Interactive Streamlit Analyst Workspace
+
+A lightweight interactive analytics UI built on top of the same backend engine.
+
+### Current capabilities
+
+- CSV upload
+- Dataset preview
+- KPI overview
+- Interactive chart builder
+- Chart type dropdowns
+- Variable selection
+- Grouped visualizations
+- Auto insights tab
+- PDF report export
+
+### Supported chart builder controls
+
+- Chart type
+- X variable
+- Y variable
+- Grouping variable
+
+---
+
+## Optional AI Executive Summaries
+
+Generate executive summaries using OpenAI.
+
+### AI safety design
+
+Only aggregated metadata is sent:
+- Dataset overview
+- Quality score
+- Insights
+- Warnings
+- Outlier summaries
+- Correlations
+- Chart notes
+
+**Raw CSV rows are never sent to OpenAI.**
+
+If AI generation fails or no API key is present, the pipeline automatically falls back to a deterministic summary.
+
+---
+
+## Logging
+
+Detailed logs are saved to:
+
+```text
+logs/app.log
 ```
-CSV File
-   │
-   ▼
-data_loader.py      Load and validate
-   │
-   ▼
-analyzer.py         Compute summaries
-   │
-   ▼
-insight_generator.py Quality score, insights, outliers, correlations
-   │
-   ├── chart_generator.py   Generate charts
-   │
-   ├── ai_summary.py        Optional executive summary (--ai-summary)
-   │
-   ▼
-pdf_report.py       Export PDF report
+
+---
+
+# Architecture
+
+The system uses a modular function-based pipeline.
+
+```text
+CSV File / Streamlit Upload
+              │
+              ▼
+data_loader.py
+Load + validate dataset
+              │
+              ▼
+analyzer.py
+Compute dataset summaries
+              │
+              ▼
+insight_generator.py
+Insights, quality score, outliers, correlations
+              │
+      ┌───────┼────────┐
+      ▼       ▼        ▼
+chart_generator.py
+Visual planning + chart metadata
+
+ai_summary.py
+Optional AI executive summaries
+
+streamlit_app.py
+Interactive analyst workspace
+      │
+      ▼
+pdf_report.py
+Professional PDF export
 ```
 
-## Project Structure
+---
 
-```
+# Project Structure
+
+```text
 ai_csv_reporter_clean/
 ├── data/
-│   └── sample_data.csv       Example dataset
+│   └── sample_data.csv
+│
+├── docs/
+│   └── FUTURE_UI_PLAN.md
+│
 ├── src/
-│   ├── config.py             Paths and settings
-│   ├── logger.py             File logging setup
-│   ├── data_loader.py        CSV loading and validation
-│   ├── analyzer.py           Dataset analysis
-│   ├── insight_generator.py  Quality scores and insights
-│   ├── ai_summary.py         Optional OpenAI summary
-│   ├── column_utils.py       Shared ID/grouping rules
-  ├── chart_generator.py    Matplotlib charts + chart metadata
-│   ├── pdf_report.py         ReportLab PDF export
-│   └── main.py               CLI entry point
-├── outputs/                  Generated charts and reports (gitignored)
-├── logs/                     Application logs (gitignored)
-├── main.py                   Project root entry point
+│   ├── config.py
+│   ├── logger.py
+│   ├── data_loader.py
+│   ├── analyzer.py
+│   ├── insight_generator.py
+│   ├── ai_summary.py
+│   ├── chart_generator.py
+│   ├── column_utils.py
+│   ├── format_utils.py
+│   ├── pdf_report.py
+│   └── main.py
+│
+├── outputs/
+│   ├── charts/
+│   ├── reports/
+│   └── uploads/
+│
+├── logs/
+│
+├── streamlit_app.py
+├── main.py
 ├── requirements.txt
-└── README.md
+├── README.md
+└── .gitignore
 ```
 
-## Setup
+---
 
-1. Clone the repository and enter the project directory.
+# Setup
 
-2. Create and activate a virtual environment:
+## 1. Clone the repository
+
+```bash
+git clone <repo_url>
+cd ai_csv_reporter_clean
+```
+
+---
+
+## 2. Create and activate a virtual environment
+
+### macOS/Linux
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# .venv\Scripts\activate    # Windows
+source .venv/bin/activate
 ```
 
-3. Install dependencies:
+### Windows
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+---
+
+## 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. (Optional) Set your OpenAI API key for AI summaries:
+---
+
+## 4. (Optional) Configure OpenAI
 
 ```bash
 export OPENAI_API_KEY=your_api_key_here
 ```
 
-## Usage
+---
 
-### Basic run
+# Usage
+
+## CLI Analytics Pipeline
+
+### Standard report generation
 
 ```bash
 python main.py data/sample_data.csv
 ```
 
-### With optional AI executive summary
+### With AI-assisted executive summary
 
 ```bash
 python main.py data/sample_data.csv --ai-summary
 ```
 
-If `OPENAI_API_KEY` is not set or the request fails, the report still completes using a deterministic fallback summary.
+---
 
-## Sample Output
+## Interactive Streamlit Workspace
+
+Launch the local analyst workspace:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Then:
+
+1. Upload a CSV file
+2. Explore KPIs and insights
+3. Build charts interactively
+4. Export a professional PDF report
+
+---
+
+# Sample CLI Output
 
 ```text
 [INFO] Loading CSV: data/sample_data.csv
@@ -111,39 +303,102 @@ If `OPENAI_API_KEY` is not set or the request fails, the report still completes 
 [INFO] Generating insights...
 [INFO] Dataset quality score: 100/100 (Excellent)
 [INFO] Generating charts...
-[INFO] Generated 5 chart(s)
+[INFO] Generated 3 chart(s)
 [INFO] Creating PDF report...
-[SUCCESS] Report saved to: outputs/reports/sample_data_report_20260522_120000.pdf
+[SUCCESS] Report saved to:
+outputs/reports/sample_data_report_20260522_172309.pdf
 ```
 
-**Generated files:**
+---
+
+# Generated Outputs
 
 | Location | Contents |
 |---|---|
-| `outputs/charts/<name>_<timestamp>/` | PNG chart files |
-| `outputs/reports/<name>_report_<timestamp>.pdf` | Full PDF report |
-| `logs/app.log` | Detailed run log |
+| `outputs/charts/` | Generated chart PNG files |
+| `outputs/reports/` | Exported PDF reports |
+| `outputs/uploads/` | Uploaded Streamlit CSV files |
+| `logs/app.log` | Detailed execution logs |
 
-## AI Safety Note
+---
 
-When `--ai-summary` is enabled, OpenAI receives **only aggregated report metadata** — dataset overview, column summaries, quality scores, insights, warnings, outlier counts, correlation highlights, and chart notes.
+# Chart Metadata System
 
-**Raw CSV rows are never sent to OpenAI.**
+Every generated chart includes metadata for future UI expansion:
 
-## Roadmap
+```python
+{
+    "chart_type": "scatter",
+    "x_column": "age",
+    "y_column": "salary",
+    "group_column": None,
+    "title": "salary vs age",
+    "caption": "...",
+    "reason_selected": "...",
+    "layout": "hero"
+}
+```
 
-### Interactive analytics (planned)
-- [ ] Streamlit or lightweight web UI for upload and report preview
-- [ ] Dropdown-based chart builder (X variable, Y variable, grouping variable, chart type)
-- [ ] Drag-and-drop style graph builder inspired by JMP
-- [ ] Export selected charts to PDF from the UI
+This prepares the backend for:
+- Dropdown-based chart builders
+- Future drag-and-drop workflows
+- Dashboard layouts
+- Chart export systems
 
-### Platform enhancements
-- [ ] Batch processing for multiple CSV files
-- [ ] Custom PDF report templates
-- [ ] Export to HTML in addition to PDF
+without rewriting the analytics engine.
+
+---
+
+# Design Philosophy
+
+This project intentionally avoids:
+
+- Unnecessary abstraction
+- Premature microservices
+- Database complexity
+- Overengineered architecture
+- AI dependency for core analytics
+
+The goal is:
+
+> A clean, maintainable analytics platform with deterministic intelligence first and optional AI enhancement second.
+
+---
+
+# Roadmap
+
+## Interactive Analytics Workspace
+
+- [x] Streamlit analyst workspace
+- [x] Interactive chart builder
+- [x] Variable dropdown controls
+- [ ] Auto-generated chart gallery
+- [ ] Chart filtering controls
+- [ ] In-browser PDF preview
+
+---
+
+## Future UI Expansion
+
+- [ ] Multi-chart dashboard layouts
+- [ ] Drag-and-drop graph builder inspired by JMP
+- [ ] Saved chart configurations
+- [ ] Interactive report editor
+- [ ] HTML report export
+- [ ] Theme customization
+
+---
+
+## Platform Enhancements
+
+- [ ] Batch CSV processing
 - [ ] Scheduled report generation
+- [ ] Multi-file comparison reports
+- [ ] Additional statistical modules
+- [ ] Cloud deployment prototype
 
-## License
+---
+
+# License
 
 MIT
