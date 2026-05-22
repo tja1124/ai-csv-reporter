@@ -184,3 +184,4 @@ When `--ai-summary` is enabled, OpenAI receives **only aggregated report metadat
 ## License
 
 MIT
+# rebuild trigger
