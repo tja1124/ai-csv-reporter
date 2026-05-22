@@ -4,10 +4,25 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+UPLOADS_DIR = OUTPUTS_DIR / "uploads"
 CHARTS_DIR = OUTPUTS_DIR / "charts"
 REPORTS_DIR = OUTPUTS_DIR / "reports"
 LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOGS_DIR / "app.log"
+
+_RUNTIME_DIRS = (
+    OUTPUTS_DIR,
+    UPLOADS_DIR,
+    REPORTS_DIR,
+    CHARTS_DIR,
+    LOGS_DIR,
+)
+
+
+def ensure_output_dirs() -> None:
+    """Create output folders required by the CLI and Streamlit workspace."""
+    for directory in _RUNTIME_DIRS:
+        directory.mkdir(parents=True, exist_ok=True)
 
 # Chart settings
 HISTOGRAM_BINS = 20

@@ -16,6 +16,7 @@ from src.config import COLORS
 from src.format_utils import apply_axis_format, format_correlation, format_number, format_value_range
 from src.logger import setup_logging
 from src.main import run_report
+from src.config import ensure_output_dirs
 from src.streamlit_helpers import (
     build_column_summary,
     filter_preview_dataframe,
@@ -483,6 +484,7 @@ def _safe_index(options: list[str], value: str | None) -> int:
 def main() -> None:
     """Run the Streamlit analyst workspace."""
     setup_logging()
+    ensure_output_dirs()
     st.set_page_config(
         page_title="AI CSV Reporter",
         page_icon="📊",

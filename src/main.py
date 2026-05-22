@@ -18,7 +18,7 @@ from src.analyzer import (
     get_numeric_summary,
 )
 from src.chart_generator import generate_charts
-from src.config import CHARTS_DIR, REPORTS_DIR
+from src.config import CHARTS_DIR, REPORTS_DIR, ensure_output_dirs
 from src.data_loader import load_csv, validate_dataframe
 from src.insight_generator import generate_report_insights
 from src.logger import get_logger, setup_logging
@@ -91,6 +91,7 @@ def run_report(
     analyst_name: str | None = None,
 ) -> Path:
     """Run the full CSV analysis and PDF report pipeline."""
+    ensure_output_dirs()
     csv_path = Path(csv_path)
 
     _info(f"Loading CSV: {csv_path}")

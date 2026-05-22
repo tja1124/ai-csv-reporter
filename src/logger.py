@@ -2,7 +2,7 @@
 
 import logging
 
-from src.config import LOG_FILE, LOGS_DIR
+from src.config import LOG_FILE, ensure_output_dirs
 
 LOGGER_NAME = "csv_reporter"
 
@@ -14,7 +14,7 @@ def setup_logging() -> logging.Logger:
     Returns:
         The configured application logger.
     """
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_output_dirs()
 
     logger = logging.getLogger(LOGGER_NAME)
     if logger.handlers:

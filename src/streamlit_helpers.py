@@ -16,12 +16,12 @@ from src.analyzer import (
     get_dataset_overview,
     get_missing_values,
 )
-from src.config import OUTPUTS_DIR
+from src.config import UPLOADS_DIR, ensure_output_dirs
 from src.data_loader import load_csv, validate_dataframe
 from src.format_utils import format_number, is_currency_like_column
 from src.insight_generator import generate_report_insights
 
-UPLOAD_DIR = OUTPUTS_DIR / "uploads"
+UPLOAD_DIR = UPLOADS_DIR
 MAX_STORED_UPLOADS = 12
 
 APP_CSS = """
@@ -64,7 +64,7 @@ def openai_key_available() -> bool:
 
 def cleanup_old_uploads(upload_dir: Path = UPLOAD_DIR, keep: int = MAX_STORED_UPLOADS) -> None:
     """Remove older uploaded CSV files to keep local/Cloud storage tidy."""
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    ensure_output_dirs()
     uploads = sorted(upload_dir.glob("*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
     for stale_file in uploads[keep:]:
         stale_file.unlink(missing_ok=True)
@@ -72,7 +72,7 @@ def cleanup_old_uploads(upload_dir: Path = UPLOAD_DIR, keep: int = MAX_STORED_UP
 
 def save_uploaded_file(uploaded_file: Any) -> Path:
     """Persist an uploaded CSV for reuse by the existing backend."""
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_output_dirs()
     destination = UPLOAD_DIR / Path(uploaded_file.name).name
     destination.write_bytes(uploaded_file.getbuffer())
     cleanup_old_uploads()
@@ -87,6 +87,7 @@ def file_fingerprint(file_bytes: bytes) -> str:
 @st.cache_data(show_spinner="Analyzing dataset...")
 def load_and_analyze_dataset(file_hash: str, file_name: str, file_bytes: bytes) -> dict[str, Any]:
     """Load, validate, and analyze an uploaded CSV through the existing backend."""
+    ensure_output_dirs()
     csv_path = UPLOAD_DIR / Path(file_name).name
     csv_path.write_bytes(file_bytes)
     cleanup_old_uploads()
