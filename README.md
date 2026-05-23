@@ -115,7 +115,7 @@ The workspace reuses the same backend modules as the CLI:
 
 - Upload and validate CSV files
 - View KPI dashboard and recommended charts
-- Build interactive scatter, boxplot, and bar charts (Plotly) with Preview / Insights / Data tabs
+- Build interactive scatter, boxplot, and bar charts (Plotly) with column shelves, saved gallery, and Preview / Insights / Data tabs
 - See why each chart was recommended and planner-matched insights
 - Generate the full PDF report through `run_report()` (matplotlib charts embedded in PDF)
 

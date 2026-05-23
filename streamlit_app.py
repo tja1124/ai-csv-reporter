@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import html
 from typing import Any
 
 import pandas as pd
@@ -11,8 +13,33 @@ from src.column_utils import assess_grouped_comparison
 from src.config import ensure_output_dirs
 from src.logger import setup_logging
 from src.main import run_report
-from src.plotly_charts import build_interactive_chart, get_chart_metadata, numeric_series_for_chart as _numeric_series_for_chart
+from src.chart_workspace import (
+    SHELF_LABELS,
+    add_chart_to_workspace,
+    assign_column_to_active_shelf,
+    chart_state_to_plot_kwargs,
+    clear_chart_shelf,
+    display_title_for_spec,
+    group_columns_for_shelf,
+    init_workspace_session,
+    load_saved_chart_into_builder,
+    move_saved_chart,
+    remove_saved_chart,
+    shelf_display_value,
+    shelf_is_active,
+    shelf_slot_labels,
+)
+from src.plotly_charts import (
+    PALETTE_NAMES,
+    POINT_COLOR_NAMES,
+    build_interactive_chart,
+    get_chart_metadata,
+    normalize_palette_name,
+    normalize_point_color_name,
+    numeric_series_for_chart as _numeric_series_for_chart,
+)
 from src.streamlit_helpers import (
+    SHELF_CHIP_MAX_LEN,
     align_chart_state_to_dataframe,
     apply_pending_session_updates,
     build_column_summary,
@@ -30,6 +57,7 @@ from src.streamlit_helpers import (
     render_kpi_dashboard,
     reset_dataset_session,
     spec_to_chart_state,
+    truncate_column_label,
 )
 
 CHART_TYPES = ("scatter", "boxplot", "bar")
@@ -119,6 +147,91 @@ def _validate_chart_selection(
     return "Unsupported chart type."
 
 
+def _show_group_palette(chart_type: str, state: dict[str, Any]) -> bool:
+    """Whether the group color palette control should appear."""
+    if chart_type == "boxplot":
+        return True
+    if chart_type == "scatter":
+        return bool(state.get("color_column"))
+    return False
+
+
+def _show_point_color(chart_type: str, state: dict[str, Any]) -> bool:
+    """Whether the ungrouped point color control should appear."""
+    if chart_type == "bar":
+        return True
+    if chart_type == "scatter":
+        return not state.get("color_column")
+    return False
+
+
+def _chart_preview_key(state: dict[str, Any]) -> str:
+    """Return a stable key for st.plotly_chart that changes whenever chart config changes.
+
+    When Streamlit sees a new key it destroys the previous component and mounts a
+    fresh one, guaranteeing a re-render even when the figure JSON is structurally
+    similar to the previous frame.
+    """
+    sig = "|".join(
+        str(state.get(k, ""))
+        for k in (
+            "chart_type", "x_column", "y_column", "group_column",
+            "color_column", "color_palette", "point_color",
+            "show_trendline", "top_n", "sort_desc",
+        )
+    )
+    return "chart_preview_" + hashlib.md5(sig.encode()).hexdigest()[:10]
+
+
+def _sync_adv_widgets_if_needed(state: dict[str, Any], chart_type: str) -> None:
+    """Push chart_state values into advanced-dropdown widget keys when an external
+    change (pill click, shelf clear, gallery load, recommended-chart load) is detected.
+
+    Streamlit widget keys hold their OWN last-selected value independently of
+    chart_state.  After a pill click the widget key still holds a stale value; when
+    the selectbox renders it returns that stale value and silently overwrites the pill
+    assignment.
+
+    We detect external changes via _ext_change_count (incremented by every callback
+    that mutates chart_state from outside the widget tree).  When the counter
+    advances we force-write only the widget keys that belong to the CURRENT chart
+    type, so each selectbox renders — and returns — the correct value.
+
+    Scoping to the current chart type prevents writing a numeric column name into an
+    adv_bar_x key whose option list only contains categorical columns, which would
+    raise a StreamlitAPIException when the bar-chart expander next renders.
+
+    Widget-driven changes do NOT increment the counter, so user edits via the
+    advanced dropdowns are never clobbered.
+    """
+    current = state.get("_ext_change_count", 0)
+    if current == st.session_state.get("_adv_sync_count", -1):
+        return  # no external change since last sync
+
+    x_col = state.get("x_column")
+    y_col = state.get("y_column")
+    group_col = state.get("group_column")
+    color_col = state.get("color_column")
+
+    if chart_type == "scatter":
+        if x_col is not None:
+            st.session_state["adv_scatter_x"] = x_col
+        if y_col is not None:
+            st.session_state["adv_scatter_y"] = y_col
+        # color selectbox uses the string "None" as its sentinel value
+        st.session_state["adv_scatter_color"] = color_col if color_col is not None else "None"
+    elif chart_type == "boxplot":
+        if group_col is not None:
+            st.session_state["adv_box_group"] = group_col
+        if y_col is not None:
+            st.session_state["adv_box_y"] = y_col
+    elif chart_type == "bar":
+        if x_col is not None:
+            st.session_state["adv_bar_x"] = x_col
+
+    st.session_state["_adv_sync_count"] = current
+
+
 def _init_chart_state(package: dict[str, Any]) -> None:
     """Initialize chart control session state from smart recommendations."""
     df = package["df"]
@@ -134,8 +247,372 @@ def _init_chart_state(package: dict[str, Any]) -> None:
                 "x_column": numeric[0] if numeric else None,
                 "y_column": numeric[1] if len(numeric) > 1 else None,
                 "group_column": None,
+                "color_column": None,
+                "show_trendline": True,
+                "top_n": 8,
+                "sort_desc": True,
+                "title_override": "",
+                "analyst_note": "",
+                "include_in_pdf": False,
+                "color_palette": "Default",
+                "point_color": "Blue",
+                # Start at 0; _adv_sync_count defaults to -1 so the first
+                # render always syncs the advanced dropdowns.
+                "_ext_change_count": 0,
             }
-    st.session_state["chart_state"] = align_chart_state_to_dataframe(st.session_state["chart_state"], df)
+    init_workspace_session(package)
+
+
+def _render_column_pills(df: pd.DataFrame, chart_options: dict[str, Any]) -> None:
+    """Render clickable column pills grouped by detected type."""
+    st.markdown('<p class="shelf-target-label">Assign to shelf</p>', unsafe_allow_html=True)
+    st.radio(
+        "Active shelf",
+        options=list(SHELF_LABELS.keys()),
+        format_func=lambda key: SHELF_LABELS[key],
+        horizontal=True,
+        key="active_shelf",
+        label_visibility="collapsed",
+    )
+    st.markdown('<div class="workspace-pills">', unsafe_allow_html=True)
+
+    for group_name, columns in group_columns_for_shelf(chart_options).items():
+        st.markdown(f'<p class="pill-group-title">{html.escape(group_name)}</p>', unsafe_allow_html=True)
+        pill_cols = st.columns(2, gap="small")
+        for index, column in enumerate(columns):
+            with pill_cols[index % 2]:
+                label = truncate_column_label(column)
+                st.button(
+                    label,
+                    key=f"pill_{group_name}_{index}",
+                    width="stretch",
+                    help=str(column),
+                    on_click=assign_column_to_active_shelf,
+                    args=(column, df),
+                )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_shelf_row(
+    shelf: str,
+    label: str,
+    value: str | None,
+    df: pd.DataFrame,
+    *,
+    enabled: bool = True,
+) -> None:
+    """Render a horizontal variable row: label, value chip, clear control."""
+    if not enabled:
+        st.markdown(
+            f'<div class="var-row--disabled">{html.escape(label)} — not used for this chart</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    if value:
+        display = truncate_column_label(value, SHELF_CHIP_MAX_LEN)
+        chip_html = (
+            f'<span class="var-chip" title="{html.escape(str(value))}">{html.escape(display)}</span>'
+        )
+    else:
+        chip_html = '<span class="var-chip var-chip--empty">None selected</span>'
+
+    row = st.columns([0.88, 2.22, 0.34], gap="small", vertical_alignment="center")
+    row[0].markdown(f'<div class="var-label">{html.escape(label)}</div>', unsafe_allow_html=True)
+    row[1].markdown(f'<div class="var-chip-wrap">{chip_html}</div>', unsafe_allow_html=True)
+    with row[2]:
+        st.markdown('<div class="shelf-clear-slot">', unsafe_allow_html=True)
+        st.button(
+            "×",
+            key=f"clear_shelf_{shelf}",
+            disabled=not value,
+            help="Clear assignment",
+            on_click=clear_chart_shelf,
+            args=(shelf, df),
+        )
+
+
+def _render_chart_shelves(df: pd.DataFrame, state: dict[str, Any], options: dict[str, Any]) -> None:
+    """Render shelf rows and advanced fallback controls; write final state to session_state."""
+    chart_type = state.get("chart_type", "scatter")
+    labels = shelf_slot_labels(chart_type)
+    supported = [c for c in CHART_TYPES if c in options["supported_chart_types"]] or list(CHART_TYPES)
+    palette_default = normalize_palette_name(state.get("color_palette"))
+    point_default = normalize_point_color_name(state.get("point_color"))
+
+    st.markdown('<div class="workspace-shelves">', unsafe_allow_html=True)
+    st.markdown('<div class="chart-control-bar">', unsafe_allow_html=True)
+
+    chart_type = st.selectbox(
+        labels["chart_type"],
+        supported,
+        index=_safe_index(supported, chart_type),
+        key="workspace_chart_type",
+    )
+    state["chart_type"] = chart_type
+
+    show_trendline = state.get("show_trendline", True)
+    top_n = state.get("top_n", 8)
+    sort_desc = state.get("sort_desc", True)
+
+    show_group = _show_group_palette(chart_type, state)
+    show_point = _show_point_color(chart_type, state)
+    show_trend = chart_type == "scatter" and show_point
+
+    if show_group or show_point or show_trend:
+        ctrl_cols = st.columns(2, gap="small")
+        slot = 0
+        if show_group:
+            with ctrl_cols[slot % 2]:
+                state["color_palette"] = st.selectbox(
+                    "Group palette",
+                    list(PALETTE_NAMES),
+                    index=_safe_index(list(PALETTE_NAMES), palette_default),
+                    key="workspace_color_palette",
+                    help="Colors for grouped series.",
+                )
+            slot += 1
+        if show_point:
+            with ctrl_cols[slot % 2]:
+                state["point_color"] = st.selectbox(
+                    "Point color",
+                    list(POINT_COLOR_NAMES),
+                    index=_safe_index(list(POINT_COLOR_NAMES), point_default),
+                    key="workspace_point_color",
+                    help="Color for ungrouped points or bars.",
+                )
+            slot += 1
+        if show_trend:
+            with ctrl_cols[slot % 2]:
+                show_trendline = st.toggle("Trendline", value=show_trendline, key="workspace_trend_toggle")
+    else:
+        state["point_color"] = point_default
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="var-assignments">', unsafe_allow_html=True)
+    for shelf in ("x", "y", "group_color"):
+        active = shelf_is_active(chart_type, shelf)
+        _render_shelf_row(
+            shelf,
+            labels[shelf],
+            shelf_display_value(state, shelf) if active else None,
+            df,
+            enabled=active,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Sync advanced dropdown widget keys to chart_state if a pill/clear/load
+    # callback changed the state since the last render pass.  Pass the current
+    # chart_type so only the keys for that chart type are updated — prevents
+    # writing a numeric column into the bar chart's categorical dropdown key.
+    _sync_adv_widgets_if_needed(state, chart_type)
+
+    with st.expander("More options", expanded=False):
+        numeric_cols = options["available_y_columns"]
+        group_cols = options["available_group_columns"]
+        bar_cols = options.get("bar_columns") or options["available_group_columns"]
+        color_cols = options.get("color_columns", group_cols)
+
+        if chart_type == "scatter":
+            if not numeric_cols:
+                st.warning("No numeric columns detected.")
+            state["x_column"] = st.selectbox(
+                "X column",
+                numeric_cols or list(df.columns),
+                index=_safe_index(numeric_cols or list(df.columns), state.get("x_column")),
+                key="adv_scatter_x",
+            )
+            y_options = [c for c in (numeric_cols or list(df.columns)) if c != state.get("x_column")]
+            state["y_column"] = st.selectbox(
+                "Y column",
+                y_options or numeric_cols or list(df.columns),
+                index=_safe_index(y_options or numeric_cols or list(df.columns), state.get("y_column")),
+                key="adv_scatter_y",
+            )
+            color_choices = ["None", *color_cols]
+            color_default = state.get("color_column") or "None"
+            if color_default not in color_choices:
+                color_default = "None"
+            color_pick = st.selectbox(
+                "Color by",
+                color_choices,
+                index=_safe_index(color_choices, color_default),
+                key="adv_scatter_color",
+            )
+            state["color_column"] = None if color_pick == "None" else color_pick
+        elif chart_type == "boxplot":
+            state["group_column"] = st.selectbox(
+                "Group by",
+                group_cols or list(df.columns),
+                index=_safe_index(group_cols or list(df.columns), state.get("group_column")),
+                key="adv_box_group",
+            )
+            state["y_column"] = st.selectbox(
+                "Y column",
+                numeric_cols or list(df.columns),
+                index=_safe_index(numeric_cols or list(df.columns), state.get("y_column")),
+                key="adv_box_y",
+            )
+        else:
+            state["x_column"] = st.selectbox(
+                "Category column",
+                bar_cols or list(df.columns),
+                index=_safe_index(bar_cols or list(df.columns), state.get("x_column")),
+                key="adv_bar_x",
+            )
+            top_n = st.slider("Top categories", 3, 12, value=state.get("top_n", 8), key="adv_bar_top_n")
+            sort_desc = st.toggle("Highest count first", value=state.get("sort_desc", True), key="adv_bar_sort")
+
+    if not _show_point_color(chart_type, state):
+        state["point_color"] = point_default
+    if not _show_group_palette(chart_type, state):
+        state["color_palette"] = palette_default
+
+    color_palette = normalize_palette_name(state.get("color_palette"))
+    point_color = normalize_point_color_name(state.get("point_color"))
+
+    state["show_trendline"] = show_trendline
+    state["top_n"] = top_n
+    state["sort_desc"] = sort_desc
+    state["color_palette"] = color_palette
+    state["point_color"] = point_color
+    st.session_state["chart_state"] = align_chart_state_to_dataframe(state, df)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_save_export_section(
+    state: dict[str, Any],
+    df: pd.DataFrame,
+    *,
+    validation_error: str | None,
+) -> None:
+    """Report prep placeholders and add-to-gallery action."""
+    _render_report_prep_controls(state)
+    if validation_error:
+        st.button(
+            "Add chart to workspace",
+            type="primary",
+            disabled=True,
+            help=validation_error,
+            width="stretch",
+        )
+    else:
+        if st.button("Add chart to workspace", type="primary", width="stretch"):
+            add_chart_to_workspace(df)
+            st.toast("Chart added to workspace gallery.")
+            st.rerun()
+
+
+def _render_report_prep_controls(state: dict[str, Any]) -> None:
+    """Placeholder report-prep fields (not wired to custom PDF export yet)."""
+    state["include_in_pdf"] = st.checkbox(
+        "Include in PDF",
+        value=state.get("include_in_pdf", False),
+        disabled=True,
+        help="Coming soon: export selected workspace charts into the PDF report.",
+    )
+    state["title_override"] = st.text_input(
+        "Chart title override",
+        value=state.get("title_override", ""),
+        placeholder="Optional title for saved charts",
+        key="workspace_title_override",
+    )
+    state["analyst_note"] = st.text_area(
+        "Analyst note",
+        value=state.get("analyst_note", ""),
+        placeholder="Notes stored with saved charts (PDF wiring later)",
+        height=68,
+        key="workspace_analyst_note",
+    )
+
+
+def _render_saved_chart_gallery(
+    package: dict[str, Any],
+) -> None:
+    """Render saved workspace charts below the builder."""
+    df = package["df"]
+    recommended = package.get("recommended_charts", [])
+    saved = st.session_state.get("saved_charts", [])
+
+    st.markdown("---")
+    st.subheader("Saved chart gallery")
+    st.caption("Charts saved here stay in your session until you load a new dataset.")
+
+    if not saved:
+        st.info("No saved charts yet. Configure the workspace and use **Add chart to workspace**.")
+        return
+
+    for index, spec in enumerate(saved):
+        title = display_title_for_spec(spec, _chart_spec_title)
+        with st.container(border=True):
+            header = st.columns([3, 1, 1, 1, 1, 1])
+            header[0].markdown(f"**{title}**")
+            header[1].button(
+                "Load",
+                key=f"gallery_load_{spec['id']}",
+                on_click=load_saved_chart_into_builder,
+                args=(spec["id"], df),
+            )
+            header[2].button(
+                "Up",
+                key=f"gallery_up_{spec['id']}",
+                disabled=index == 0,
+                on_click=move_saved_chart,
+                args=(spec["id"], -1),
+            )
+            header[3].button(
+                "Down",
+                key=f"gallery_down_{spec['id']}",
+                disabled=index == len(saved) - 1,
+                on_click=move_saved_chart,
+                args=(spec["id"], 1),
+            )
+            header[4].button(
+                "Remove",
+                key=f"gallery_remove_{spec['id']}",
+                on_click=remove_saved_chart,
+                args=(spec["id"],),
+            )
+            if spec.get("analyst_note"):
+                header[5].caption("Has note")
+
+            plot_kwargs = chart_state_to_plot_kwargs(spec)
+            chart_type = spec.get("chart_type", "scatter")
+            err = _validate_chart_selection(
+                df,
+                chart_type,
+                plot_kwargs["x_column"],
+                plot_kwargs["y_column"],
+                plot_kwargs["group_column"],
+                package["chart_options"],
+            )
+            if err:
+                st.warning(err)
+                continue
+            try:
+                fig = build_interactive_chart(df, chart_type, **plot_kwargs)
+                st.plotly_chart(fig, width="stretch", key=f"gallery_plot_{spec['id']}")
+            except Exception as exc:
+                st.warning(f"Could not render saved chart: {exc}")
+                continue
+
+            try:
+                meta = get_chart_metadata(
+                    df,
+                    recommended,
+                    chart_type,
+                    x_column=plot_kwargs["x_column"],
+                    y_column=plot_kwargs["y_column"],
+                    group_column=plot_kwargs["group_column"],
+                )
+                st.caption(meta["insight"])
+            except Exception:
+                pass
+            if spec.get("analyst_note"):
+                st.markdown(f"*Note:* {spec['analyst_note']}")
+            if spec.get("include_in_pdf"):
+                st.caption("Marked for PDF (export not wired yet)")
 
 
 def _render_sidebar(package: dict[str, Any]) -> str:
@@ -202,7 +679,7 @@ def _render_overview_page(package: dict[str, Any]) -> None:
             cols[0].markdown(f"**{label}** · {title}")
             cols[1].button("Use", key=f"use_rec_{index}", on_click=queue_recommended_chart, args=(spec, package["df"]))
     else:
-        st.info("No automatic chart recommendations for this dataset. Open **Chart Builder** to explore columns manually.")
+        st.info("No automatic chart recommendations for this dataset. Open **Chart Builder** (Visual Analytics Workspace) to explore columns manually.")
 
 
 def _render_explore_page(package: dict[str, Any]) -> None:
@@ -215,7 +692,7 @@ def _render_explore_page(package: dict[str, Any]) -> None:
     if summary.empty:
         st.info("No columns available to summarize.")
     else:
-        st.dataframe(summary, use_container_width=True, hide_index=True)
+        st.dataframe(summary, width="stretch", hide_index=True)
 
     st.subheader("Data Preview")
     if df.empty:
@@ -245,7 +722,7 @@ def _render_explore_page(package: dict[str, Any]) -> None:
         sort_column=None if sort_column == "None" else sort_column,
         sort_ascending=sort_ascending,
     )
-    st.dataframe(preview, use_container_width=True, hide_index=True)
+    st.dataframe(preview, width="stretch", hide_index=True)
     if preview.empty:
         st.caption("No rows match the current filters.")
     else:
@@ -253,175 +730,148 @@ def _render_explore_page(package: dict[str, Any]) -> None:
 
 
 def _render_chart_page(package: dict[str, Any]) -> None:
-    """Render the interactive Plotly chart builder."""
+    """Render the JMP-lite interactive chart workspace."""
     df = package["df"]
     options = package["chart_options"]
     recommended = package.get("recommended_charts", [])
     _init_chart_state(package)
     state = st.session_state["chart_state"]
 
-    st.subheader("Chart Builder")
-    st.caption("Interactive exploration powered by Plotly. PDF reports still use the matplotlib export pipeline.")
+    st.subheader("Visual Analytics Workspace")
+    st.markdown(
+        '<p class="workspace-hint">Assign columns on the left, preview on the right, '
+        "and save views to the gallery below.</p>",
+        unsafe_allow_html=True,
+    )
 
-    controls_col, workspace_col = st.columns([1, 2.2], gap="large")
+    left_panel, right_panel = st.columns([31, 69], gap="medium")
 
-    with controls_col:
-        with st.container(border=True):
-            st.markdown("**Chart controls**")
-            supported = [c for c in CHART_TYPES if c in options["supported_chart_types"]] or list(CHART_TYPES)
-            chart_type = st.selectbox(
-                "Chart type",
-                supported,
-                index=_safe_index(supported, state.get("chart_type")),
-                key="chart_type_select",
-            )
+    with left_panel:
+        st.markdown('<div class="workspace-left">', unsafe_allow_html=True)
 
-            x_column = state.get("x_column")
-            y_column = state.get("y_column")
-            group_column = state.get("group_column")
-            color_column: str | None = None
-            show_trendline = True
-            top_n = 8
-            sort_desc = True
+        st.markdown('<p class="workspace-panel-title">Dataset columns</p>', unsafe_allow_html=True)
+        st.markdown('<div class="workspace-panel-box">', unsafe_allow_html=True)
+        _render_column_pills(df, options)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            numeric_cols = options["available_y_columns"]
-            group_cols = options["available_group_columns"]
-            bar_cols = options.get("bar_columns") or options["available_group_columns"]
-            color_cols = options.get("color_columns", group_cols)
+        st.markdown('<p class="workspace-panel-title">Chart setup</p>', unsafe_allow_html=True)
+        st.markdown('<div class="workspace-panel-box">', unsafe_allow_html=True)
+        _render_chart_shelves(df, state, options)
+        # _render_chart_shelves writes the definitive aligned state back to
+        # session_state at its own end; re-read once here so save/export and
+        # the right panel both see the same single source of truth.
+        state = st.session_state["chart_state"]
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            if chart_type == "scatter":
-                if not numeric_cols:
-                    st.warning("No numeric columns detected. Pick numeric fields or switch chart type.")
-                x_column = st.selectbox(
-                    "X column",
-                    numeric_cols or list(df.columns),
-                    index=_safe_index(numeric_cols or list(df.columns), state.get("x_column")),
-                    key="scatter_x_select",
-                )
-                y_options = [c for c in (numeric_cols or list(df.columns)) if c != x_column]
-                y_column = st.selectbox(
-                    "Y column",
-                    y_options or numeric_cols or list(df.columns),
-                    index=_safe_index(y_options or numeric_cols or list(df.columns), state.get("y_column")),
-                    key="scatter_y_select",
-                )
-                color_choices = ["None", *color_cols]
-                color_default = state.get("color_column") or "None"
-                if color_default not in color_choices:
-                    color_default = "None"
-                color_pick = st.selectbox(
-                    "Color by (optional)",
-                    color_choices,
-                    index=_safe_index(color_choices, color_default),
-                    key="scatter_color_select",
-                )
-                color_column = None if color_pick == "None" else color_pick
-                show_trendline = st.toggle("Show trendline", value=True, key="scatter_trend_toggle")
-            elif chart_type == "boxplot":
-                group_column = st.selectbox(
-                    "Group by",
-                    group_cols or list(df.columns),
-                    index=_safe_index(group_cols or list(df.columns), state.get("group_column")),
-                    key="box_group_select",
-                )
-                y_column = st.selectbox(
-                    "Y column",
-                    numeric_cols or list(df.columns),
-                    index=_safe_index(numeric_cols or list(df.columns), state.get("y_column")),
-                    key="box_y_select",
-                )
-            else:
-                x_column = st.selectbox(
-                    "Category column",
-                    bar_cols or list(df.columns),
-                    index=_safe_index(bar_cols or list(df.columns), state.get("x_column")),
-                    key="bar_x_select",
-                )
-                top_n = st.slider("Top categories", min_value=3, max_value=12, value=8, key="bar_top_n")
-                sort_desc = st.toggle("Highest count first", value=True, key="bar_sort_desc")
+        st.markdown('<p class="workspace-panel-title">Save & export</p>', unsafe_allow_html=True)
+        st.markdown('<div class="workspace-panel-box">', unsafe_allow_html=True)
+        validation_error = _validate_chart_selection(
+            df,
+            state.get("chart_type", "scatter"),
+            state.get("x_column"),
+            state.get("y_column"),
+            state.get("group_column"),
+            options,
+        )
+        _render_save_export_section(state, df, validation_error=validation_error)
+        st.markdown("</div></div>", unsafe_allow_html=True)
 
-            st.session_state["chart_state"] = align_chart_state_to_dataframe(
-                {
-                    "chart_type": chart_type,
-                    "x_column": x_column,
-                    "y_column": y_column,
-                    "group_column": group_column,
-                    "color_column": color_column,
-                },
-                df,
-            )
-
+    # Single authoritative read after the entire left panel has settled.
+    state = st.session_state["chart_state"]
+    chart_type = state.get("chart_type", "scatter")
+    color_palette = normalize_palette_name(state.get("color_palette", "Default"))
+    point_color = normalize_point_color_name(state.get("point_color", "Blue"))
+    show_trendline = state.get("show_trendline", True)
+    top_n = state.get("top_n", 8)
+    sort_desc = state.get("sort_desc", True)
+    x_column = state.get("x_column")
+    y_column = state.get("y_column")
+    group_column = state.get("group_column")
+    color_column = state.get("color_column")
     validation_error = _validate_chart_selection(df, chart_type, x_column, y_column, group_column, options)
 
-    with workspace_col:
-        chart_title = _chart_spec_title(
-            {
-                "type": chart_type,
-                "x": x_column or group_column,
-                "y": y_column,
-                "column": x_column,
-            }
-        )
+    with right_panel:
+        st.markdown('<div class="workspace-main">', unsafe_allow_html=True)
+        chart_title = display_title_for_spec({**state, "chart_type": chart_type}, _chart_spec_title)
         st.markdown(f"### {chart_title}")
-        st.caption("Zoom, pan, and hover on the chart. Export the full PDF report from the Export Report section.")
+        if _show_point_color(chart_type, state) and not color_column:
+            color_note = f"Point color: **{point_color}**"
+        elif _show_group_palette(chart_type, state):
+            color_note = f"Group palette: **{color_palette}**"
+        else:
+            color_note = "Configure variables on the left to preview"
+        st.caption(f"{color_note} · Zoom, pan, hover to inspect.")
 
         if validation_error:
             st.warning(validation_error)
-            return
-
-        try:
-            metadata = get_chart_metadata(
-                df,
-                recommended,
-                chart_type,
-                x_column=x_column,
-                y_column=y_column,
-                group_column=group_column,
-            )
-        except Exception as exc:
-            st.warning(f"Could not build chart metadata: {exc}")
-            metadata = {"insight": "", "reason": "", "is_recommended": "Custom exploration"}
-
-        preview_tab, insight_tab, data_tab = st.tabs(["Preview", "Insights", "Data"])
-
-        with preview_tab:
+        else:
+            metadata: dict[str, str] = {
+                "insight": "",
+                "reason": "",
+                "is_recommended": "Custom exploration",
+            }
             try:
-                fig = build_interactive_chart(
+                metadata = get_chart_metadata(
                     df,
+                    recommended,
                     chart_type,
                     x_column=x_column,
                     y_column=y_column,
                     group_column=group_column,
-                    color_column=color_column,
-                    show_trendline=show_trendline,
-                    top_n=top_n,
-                    sort_desc=sort_desc,
                 )
-                st.plotly_chart(fig, use_container_width=True)
             except Exception as exc:
-                st.warning(f"Could not render this chart. Try different columns or chart type. ({exc})")
+                st.warning(f"Could not build chart metadata: {exc}")
 
-        with insight_tab:
-            st.markdown(f"**Insight:** {metadata['insight']}")
-            with st.container(border=True):
-                st.markdown("**Why this chart was recommended**")
-                st.write(metadata["reason"])
-                st.caption(f"Planner match: {metadata['is_recommended']}")
+            preview_tab, insight_tab, data_tab = st.tabs(["Preview", "Insights", "Data"])
 
-        with data_tab:
-            preview_rows = _chart_data_preview(
-                df,
-                chart_type,
-                x_column,
-                y_column,
-                group_column,
-                limit=15,
-            )
-            if preview_rows.empty:
-                st.info("No rows available for the selected chart columns.")
-            else:
-                st.dataframe(preview_rows, use_container_width=True, hide_index=True)
-                st.caption(f"Showing up to {len(preview_rows)} rows used in this chart view.")
+            with preview_tab:
+                st.markdown('<div class="preview-chart-wrap">', unsafe_allow_html=True)
+                try:
+                    fig = build_interactive_chart(
+                        df,
+                        chart_type,
+                        x_column=x_column,
+                        y_column=y_column,
+                        group_column=group_column,
+                        color_column=color_column,
+                        show_trendline=show_trendline,
+                        top_n=top_n,
+                        sort_desc=sort_desc,
+                        color_palette=color_palette,
+                        point_color=point_color,
+                    )
+                    st.plotly_chart(fig, width="stretch", key=_chart_preview_key(state))
+                except Exception as exc:
+                    st.warning(f"Could not render this chart. Try different columns or chart type. ({exc})")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            with insight_tab:
+                st.markdown(f"**Insight:** {metadata['insight']}")
+                with st.container(border=True):
+                    st.markdown("**Why this chart was recommended**")
+                    st.write(metadata["reason"])
+                    st.caption(f"Planner match: {metadata['is_recommended']}")
+                if state.get("analyst_note"):
+                    st.markdown(f"**Analyst note:** {state['analyst_note']}")
+
+            with data_tab:
+                preview_rows = _chart_data_preview(
+                    df,
+                    chart_type,
+                    x_column,
+                    y_column,
+                    group_column,
+                    limit=15,
+                )
+                if preview_rows.empty:
+                    st.info("No rows available for the selected chart columns.")
+                else:
+                    st.dataframe(preview_rows, width="stretch", hide_index=True)
+                    st.caption(f"Showing up to {len(preview_rows)} rows used in this chart view.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    _render_saved_chart_gallery(package)
 
 
 def _render_export_page(package: dict[str, Any]) -> None:
@@ -440,7 +890,7 @@ def _render_export_page(package: dict[str, Any]) -> None:
         if use_ai_summary and not openai_key_available():
             st.warning("OPENAI_API_KEY is not set. The report will use the deterministic fallback summary.")
 
-    if st.button("Generate PDF Report", type="primary", use_container_width=True):
+    if st.button("Generate PDF Report", type="primary", width="stretch"):
         progress = st.progress(0, text="Preparing report...")
         try:
             progress.progress(35, text="Running analysis, charts, and PDF export...")
@@ -479,7 +929,7 @@ def _render_welcome_screen() -> None:
         st.markdown("**Demo without uploading**")
         if get_sample_csv_bytes() is None:
             st.warning("Sample file not found at data/sample_data.csv")
-        elif st.button("Try sample dataset", type="primary", use_container_width=True):
+        elif st.button("Try sample dataset", type="primary", width="stretch"):
             st.session_state["use_sample_dataset"] = True
             st.rerun()
 
@@ -539,7 +989,7 @@ def main() -> None:
         st.markdown("**Quick start**")
         if get_sample_csv_bytes() is None:
             st.caption("Sample file unavailable.")
-        elif st.button("Try sample dataset", use_container_width=True):
+        elif st.button("Try sample dataset", width="stretch"):
             st.session_state["use_sample_dataset"] = True
             st.rerun()
 

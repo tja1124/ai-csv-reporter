@@ -21,13 +21,16 @@ from src.data_loader import load_csv, sanitize_dataframe_columns, validate_dataf
 from src.format_utils import format_number, is_currency_like_column
 from src.insight_generator import generate_report_insights
 
+PILL_LABEL_MAX_LEN = 18
+SHELF_CHIP_MAX_LEN = 28
+
 UPLOAD_DIR = UPLOADS_DIR
 MAX_STORED_UPLOADS = 12
 SAMPLE_CSV_PATH = PROJECT_ROOT / "data" / "sample_data.csv"
 
 APP_CSS = """
 <style>
-    .block-container { padding-top: 1.1rem; padding-bottom: 1.5rem; max-width: 1180px; }
+    .block-container { padding-top: 1rem; padding-bottom: 1.25rem; max-width: 1280px; }
     .app-header {
         background: linear-gradient(135deg, #2E5090 0%, #5B8DBE 100%);
         color: white; padding: 1.1rem 1.25rem; border-radius: 10px;
@@ -48,6 +51,126 @@ APP_CSS = """
         padding: 1rem 1.1rem; margin-bottom: 0.75rem;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
     }
+    .workspace-panel-title {
+        color: #1E293B; font-size: 0.88rem; font-weight: 700;
+        margin: 0.35rem 0 0.3rem 0; letter-spacing: 0.02em;
+        text-transform: uppercase;
+    }
+    .workspace-panel-box {
+        background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px;
+        padding: 0.75rem 0.85rem 0.8rem 0.85rem; margin-bottom: 0.65rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .workspace-left {
+        padding-right: 0.35rem;
+    }
+    div.workspace-left div[data-testid="stVerticalBlock"] > div { gap: 0.2rem !important; }
+    div.workspace-left div[data-testid="stRadio"] { margin-bottom: 0.15rem; }
+    div.workspace-left div[data-testid="stExpander"] { margin-top: 0.15rem; margin-bottom: 0.1rem; }
+    div.workspace-left div[data-testid="stSelectbox"] { margin-bottom: 0.1rem; }
+    .workspace-main {
+        background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px;
+        padding: 0.7rem 0.85rem 0.75rem 0.85rem;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+        min-width: 0;
+    }
+    .workspace-main h3 { margin: 0 0 0.15rem 0; font-size: 1.12rem; line-height: 1.25; }
+    .workspace-main div[data-testid="stCaptionContainer"] { margin-bottom: 0.25rem; }
+    .workspace-main [data-baseweb="tab-list"] {
+        gap: 0.12rem; margin-bottom: 0; min-height: 2.1rem;
+    }
+    .workspace-main [data-baseweb="tab-panel"] { padding-top: 0.1rem; padding-bottom: 0; }
+    .preview-chart-wrap {
+        background: #FAFBFC; border: 1px solid #EEF2F6; border-radius: 10px;
+        padding: 0.15rem 0.1rem 0.05rem 0.1rem; margin-top: 0.1rem;
+        overflow: hidden;
+    }
+    .preview-chart-wrap div[data-testid="stPlotlyChart"] { margin: 0 !important; padding: 0 !important; }
+    .workspace-hint { color: #64748B; font-size: 0.8rem; margin: 0 0 0.45rem 0; }
+    .shelf-target-label {
+        color: #64748B; font-size: 0.72rem; font-weight: 600;
+        margin-bottom: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    div.workspace-pills { margin-top: 0.1rem; }
+    div.workspace-pills div[data-testid="column"] {
+        padding: 0 0.18rem 0.38rem 0.18rem; min-width: 0 !important;
+    }
+    div.workspace-pills div[data-testid="stButton"] > button {
+        min-height: 2.35rem !important; max-height: 2.35rem !important; height: 2.35rem !important;
+        padding: 0 0.55rem !important; font-size: 0.78rem !important;
+        line-height: 2.35rem !important; white-space: nowrap !important;
+        overflow: hidden !important; text-overflow: ellipsis !important;
+        word-break: keep-all !important; overflow-wrap: normal !important;
+        display: block !important; width: 100% !important; max-width: 100% !important;
+        border-radius: 8px !important; border: 1px solid #E2E8F0 !important;
+        background: #F8FAFC !important; color: #1E293B !important;
+    }
+    div.workspace-pills div[data-testid="stButton"] > button:hover {
+        border-color: #94A3B8 !important; background: #EFF6FF !important;
+    }
+    .pill-group-title {
+        color: #64748B; font-size: 0.72rem; font-weight: 600;
+        margin: 0.55rem 0 0.28rem 0; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .pill-group-title:first-of-type { margin-top: 0.15rem; }
+    div.chart-control-bar { margin: 0 0 0.35rem 0; }
+    div.chart-control-bar div[data-testid="stSelectbox"] label,
+    div.chart-control-bar div[data-testid="stToggle"] label {
+        font-size: 0.76rem !important; margin-bottom: 0.1rem !important;
+    }
+    div.var-assignments { margin: 0.15rem 0 0.25rem 0; }
+    div.var-assignments div[data-testid="column"] { min-width: 0; }
+    .var-label {
+        color: #64748B; font-size: 0.76rem; font-weight: 600;
+        line-height: 2rem; white-space: nowrap;
+    }
+    .var-chip-wrap { min-width: 0; display: flex; align-items: center; height: 2rem; }
+    .var-chip {
+        display: inline-block; max-width: 100%; padding: 0.28rem 0.55rem;
+        background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 999px;
+        color: #1E3A5F; font-size: 0.8rem; font-weight: 600; line-height: 1.2;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .var-chip--empty {
+        background: #F8FAFC; border: 1px dashed #CBD5E1; color: #94A3B8;
+        font-style: italic; font-weight: 500;
+    }
+    .var-row--disabled { color: #94A3B8; font-size: 0.78rem; margin: 0.2rem 0; }
+    div.shelf-clear-slot div[data-testid="stButton"] {
+        display: flex; justify-content: flex-end;
+    }
+    div.shelf-clear-slot {
+        display: flex; align-items: center; justify-content: flex-end;
+        height: 2rem; min-width: 2.4rem;
+    }
+    div.shelf-clear-slot div[data-testid="stButton"] {
+        width: 2.25rem !important; min-width: 2.25rem !important; flex: 0 0 2.25rem !important;
+    }
+    div.shelf-clear-slot div[data-testid="stButton"] > button {
+        min-width: 2.25rem !important; max-width: 2.25rem !important; width: 2.25rem !important;
+        min-height: 2rem !important; max-height: 2rem !important; height: 2rem !important;
+        padding: 0 !important; margin: 0 !important;
+        font-size: 1.2rem !important; line-height: 1 !important;
+        white-space: nowrap !important; flex-shrink: 0 !important;
+        border-radius: 8px !important; overflow: hidden !important;
+        text-overflow: clip !important;
+    }
+    div.shelf-clear-slot div[data-testid="stButton"] > button p {
+        white-space: nowrap !important; line-height: 1 !important; margin: 0 !important;
+    }
+    div.workspace-shelves details {
+        margin-top: 0.35rem; border: none;
+    }
+    div.workspace-shelves details summary {
+        font-size: 0.78rem !important; color: #64748B !important;
+        padding: 0.2rem 0 !important; font-weight: 500 !important;
+    }
+    div.workspace-shelves details summary span {
+        font-size: 0.78rem !important;
+    }
+    div.workspace-shelves hr {
+        margin: 0.45rem 0 0.4rem 0; border: none; border-top: 1px solid #EEF2F6;
+    }
     div[data-testid="stSidebar"] { background-color: #F8FAFC; }
 </style>
 """
@@ -56,6 +179,14 @@ APP_CSS = """
 def inject_app_styles() -> None:
     """Apply lightweight global styling."""
     st.markdown(APP_CSS, unsafe_allow_html=True)
+
+
+def truncate_column_label(name: str, max_len: int = PILL_LABEL_MAX_LEN) -> str:
+    """Shorten long column names for pills and shelf cards."""
+    text = str(name).strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[: max_len - 1]}…"
 
 
 def openai_key_available() -> bool:
@@ -106,7 +237,18 @@ def reset_dataset_session(file_hash: str) -> None:
     if previous == file_hash:
         return
     st.session_state["dataset_hash"] = file_hash
-    for key in ("chart_state", "pending_chart_state", "pending_nav_page"):
+    for key in (
+        "chart_state",
+        "pending_chart_state",
+        "pending_nav_page",
+        "saved_charts",
+        "active_shelf",
+        # Reset the advanced-dropdown sync counter so the first render on the new
+        # dataset always syncs the widget keys — prevents stale column names from
+        # the previous file appearing in the new file's dropdowns (which would raise
+        # a StreamlitAPIException if the old name is not in the new options list).
+        "_adv_sync_count",
+    ):
         st.session_state.pop(key, None)
 
 
@@ -305,7 +447,15 @@ def apply_pending_session_updates() -> None:
 
 def queue_recommended_chart(spec: dict[str, Any], df: pd.DataFrame) -> None:
     """Queue a recommended chart for the next rerun without mutating widget-bound session keys."""
-    st.session_state["pending_chart_state"] = spec_to_chart_state(spec, df)
+    new_state = spec_to_chart_state(spec, df)
+    # Bump the external-change counter so _sync_adv_widgets_if_needed fires on the
+    # next render, forcing the advanced dropdowns to display the new column values.
+    # Reading the current counter (rather than always writing 1) handles the edge
+    # case where the counter is already 0 after the very first render pass.
+    new_state["_ext_change_count"] = (
+        st.session_state.get("chart_state", {}).get("_ext_change_count", 0) + 1
+    )
+    st.session_state["pending_chart_state"] = new_state
     st.session_state["pending_nav_page"] = "Chart Builder"
 
 
@@ -404,7 +554,7 @@ def align_chart_state_to_dataframe(state: dict[str, Any], df: pd.DataFrame) -> d
     """Ensure chart state columns exist in the current dataframe."""
     all_columns = list(df.columns)
     aligned = dict(state)
-    for key in ("x_column", "y_column", "group_column"):
+    for key in ("x_column", "y_column", "group_column", "color_column"):
         value = aligned.get(key)
         if value and value not in all_columns:
             aligned[key] = None
@@ -424,6 +574,10 @@ def spec_to_chart_state(spec: dict[str, Any], df: pd.DataFrame | None = None) ->
         "x_column": spec.get("x") or spec.get("column"),
         "y_column": spec.get("y"),
         "group_column": spec.get("x") if chart_type == "boxplot" else None,
+        "color_column": None,
+        "show_trendline": True,
+        "top_n": 8,
+        "sort_desc": True,
     }
     if df is not None:
         return align_chart_state_to_dataframe(state, df)
