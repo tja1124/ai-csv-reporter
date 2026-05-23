@@ -12,7 +12,7 @@ Built as a modular, portfolio-ready project demonstrating data validation, deter
 - **Intelligent charts** — scatterplots, boxplots, and selective bar charts with metadata for future UI builders
 - **PDF export** — KPI cards, executive summary, compact chart layouts, and structured appendix
 - **Optional AI summary** — executive summary via OpenAI using aggregated metadata only
-- **Streamlit workspace** — local analyst UI for upload, exploration, chart building, and PDF export
+- **Streamlit workspace** — interactive Plotly charts for exploration; PDF export still uses matplotlib
 
 ## Architecture
 
@@ -52,7 +52,8 @@ ai_csv_reporter_clean/
 │   ├── insight_generator.py  Quality scores and insights
 │   ├── ai_summary.py         Optional OpenAI summary
 │   ├── column_utils.py       Shared ID/grouping rules
-  ├── chart_generator.py    Matplotlib charts + chart metadata
+  ├── chart_generator.py    Matplotlib charts + chart metadata (CLI/PDF)
+  ├── plotly_charts.py      Plotly charts (Streamlit only)
 │   ├── pdf_report.py         ReportLab PDF export
 │   └── main.py               CLI entry point
 ├── streamlit_app.py          Streamlit analyst workspace
@@ -114,8 +115,9 @@ The workspace reuses the same backend modules as the CLI:
 
 - Upload and validate CSV files
 - View KPI dashboard and recommended charts
-- Build scatter, boxplot, and bar charts with dropdown controls
-- Generate the full PDF report through `run_report()`
+- Build interactive scatter, boxplot, and bar charts (Plotly) with Preview / Insights / Data tabs
+- See why each chart was recommended and planner-matched insights
+- Generate the full PDF report through `run_report()` (matplotlib charts embedded in PDF)
 
 Optional report title and analyst name can be set in the Export Report section.
 

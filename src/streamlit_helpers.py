@@ -16,13 +16,14 @@ from src.analyzer import (
     get_dataset_overview,
     get_missing_values,
 )
-from src.config import UPLOADS_DIR, ensure_output_dirs
-from src.data_loader import load_csv, validate_dataframe
+from src.config import PROJECT_ROOT, UPLOADS_DIR, ensure_output_dirs
+from src.data_loader import load_csv, sanitize_dataframe_columns, validate_dataframe
 from src.format_utils import format_number, is_currency_like_column
 from src.insight_generator import generate_report_insights
 
 UPLOAD_DIR = UPLOADS_DIR
 MAX_STORED_UPLOADS = 12
+SAMPLE_CSV_PATH = PROJECT_ROOT / "data" / "sample_data.csv"
 
 APP_CSS = """
 <style>
@@ -79,9 +80,59 @@ def save_uploaded_file(uploaded_file: Any) -> Path:
     return destination
 
 
+def get_sample_csv_bytes() -> bytes | None:
+    """Return bundled sample CSV bytes for demo mode, or None if missing."""
+    if not SAMPLE_CSV_PATH.is_file():
+        return None
+    return SAMPLE_CSV_PATH.read_bytes()
+
+
+def enrich_analysis_package(package: dict[str, Any], df: pd.DataFrame) -> dict[str, Any]:
+    """Attach chart recommendations and UI column options to an analysis package."""
+    from src.chart_generator import get_recommended_charts
+
+    package["df"] = df
+    try:
+        package["recommended_charts"] = get_recommended_charts(df)
+    except Exception:
+        package["recommended_charts"] = []
+    package["chart_options"] = get_ui_chart_column_options(df)
+    return package
+
+
+def reset_dataset_session(file_hash: str) -> None:
+    """Clear chart/navigation session keys when a new dataset is loaded."""
+    previous = st.session_state.get("dataset_hash")
+    if previous == file_hash:
+        return
+    st.session_state["dataset_hash"] = file_hash
+    for key in ("chart_state", "pending_chart_state", "pending_nav_page"):
+        st.session_state.pop(key, None)
+
+
+def render_dataset_warnings(warnings: list[str]) -> None:
+    """Show validation warnings once per run."""
+    if not warnings:
+        return
+    with st.expander(f"Data notes ({len(warnings)})", expanded=len(warnings) <= 2):
+        for warning in warnings:
+            st.warning(warning)
+
+
 def file_fingerprint(file_bytes: bytes) -> str:
     """Build a stable hash for Streamlit cache keys."""
     return hashlib.sha256(file_bytes).hexdigest()
+
+
+def load_sample_dataset() -> dict[str, Any] | None:
+    """Load and analyze the bundled sample dataset for demo mode."""
+    sample_bytes = get_sample_csv_bytes()
+    if sample_bytes is None:
+        return None
+    file_hash = file_fingerprint(sample_bytes)
+    package = load_and_analyze_dataset(file_hash, SAMPLE_CSV_PATH.name, sample_bytes)
+    package["source_label"] = "Sample dataset"
+    return enrich_analysis_package(package, package["df"])
 
 
 @st.cache_data(show_spinner="Analyzing dataset...")
@@ -93,7 +144,9 @@ def load_and_analyze_dataset(file_hash: str, file_name: str, file_bytes: bytes) 
     cleanup_old_uploads()
 
     df = load_csv(csv_path)
-    warnings = validate_dataframe(df)
+    sanitize_warnings: list[str] = []
+    df, sanitize_warnings = sanitize_dataframe_columns(df)
+    warnings = sanitize_warnings + validate_dataframe(df)
     overview = get_dataset_overview(df)
     missing_values = get_missing_values(df)
     categorical_summary = get_categorical_summary(df)
@@ -114,6 +167,7 @@ def load_and_analyze_dataset(file_hash: str, file_name: str, file_bytes: bytes) 
         "missing_values": missing_values,
         "column_info": column_info,
         "report_insights": report_insights,
+        "source_label": file_name,
     }
 
 
@@ -176,13 +230,22 @@ def build_column_summary(column_info: dict[str, dict[str, Any]], df: pd.DataFram
     """Build a compact column summary table for exploration."""
     rows: list[dict[str, str]] = []
     missing_values = get_missing_values(df)
+    ui_options = get_ui_chart_column_options(df)
 
     for column, info in column_info.items():
+        if column not in df.columns:
+            continue
         missing = missing_values["columns_with_missing"].get(column, {}).get("percentage", 0.0)
+        if column in ui_options["available_y_columns"]:
+            role = "numeric"
+        elif column in ui_options["datetime_columns"]:
+            role = "datetime"
+        else:
+            role = info["category"]
         rows.append(
             {
                 "Column": column,
-                "Type": info["category"],
+                "Type": role,
                 "Unique": str(info["unique_values"]),
                 "Missing %": f"{missing:.1f}%",
                 "Format": "Currency-like" if is_currency_like_column(column) else "Standard",
@@ -232,7 +295,128 @@ def render_app_header() -> None:
     )
 
 
-def spec_to_chart_state(spec: dict[str, Any]) -> dict[str, Any]:
+def apply_pending_session_updates() -> None:
+    """Apply navigation/chart updates queued before widgets render (avoids StreamlitAPIException)."""
+    if "pending_chart_state" in st.session_state:
+        st.session_state["chart_state"] = st.session_state.pop("pending_chart_state")
+    if "pending_nav_page" in st.session_state:
+        st.session_state["nav_page"] = st.session_state.pop("pending_nav_page")
+
+
+def queue_recommended_chart(spec: dict[str, Any], df: pd.DataFrame) -> None:
+    """Queue a recommended chart for the next rerun without mutating widget-bound session keys."""
+    st.session_state["pending_chart_state"] = spec_to_chart_state(spec, df)
+    st.session_state["pending_nav_page"] = "Chart Builder"
+
+
+def _series_numeric_ratio(series: pd.Series) -> float:
+    """Return the share of non-null values that parse as numeric."""
+    non_null = series.dropna()
+    if non_null.empty:
+        return 0.0
+    coerced = pd.to_numeric(non_null.astype(str).str.replace(",", "", regex=False), errors="coerce")
+    return float(coerced.notna().sum() / len(non_null))
+
+
+def _is_ui_numeric_column(df: pd.DataFrame, column: str, *, min_unique: int = 2) -> bool:
+    """Detect numeric columns for the UI, including mostly-numeric object columns."""
+    if column not in df.columns:
+        return False
+    series = df[column]
+    if series.isnull().all():
+        return False
+    if pd.api.types.is_numeric_dtype(series):
+        return series.nunique(dropna=True) >= min_unique
+    if pd.api.types.is_bool_dtype(series):
+        return series.nunique(dropna=True) >= min_unique
+    return _series_numeric_ratio(series) >= 0.6 and series.nunique(dropna=True) >= min_unique
+
+
+def _is_ui_datetime_column(series: pd.Series) -> bool:
+    """Detect datetime columns, including common string date formats."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return True
+    if series.dtype == object:
+        parsed = pd.to_datetime(series, errors="coerce", utc=False)
+        return parsed.notna().sum() / max(series.notna().sum(), 1) >= 0.6
+    return False
+
+
+def get_ui_chart_column_options(df: pd.DataFrame) -> dict[str, Any]:
+    """
+    Build chart dropdown options from the loaded dataframe (broader than PDF auto-chart rules).
+
+    Uses actual column names in the dataframe so every usable field can appear in Chart Builder.
+    """
+    all_columns = [str(column) for column in df.columns]
+    numeric_cols: list[str] = []
+    datetime_cols: list[str] = []
+    categorical_cols: list[str] = []
+
+    for column in all_columns:
+        if column not in df.columns:
+            continue
+        series = df[column]
+        if _is_ui_datetime_column(series):
+            datetime_cols.append(column)
+            continue
+        if _is_ui_numeric_column(df, column):
+            numeric_cols.append(column)
+        elif not series.isnull().all():
+            categorical_cols.append(column)
+
+    group_cols = [
+        column
+        for column in categorical_cols
+        if 2 <= df[column].nunique(dropna=True) <= 50
+    ]
+    bar_cols = [
+        column
+        for column in categorical_cols
+        if 1 <= df[column].nunique(dropna=True) <= 30
+    ]
+
+    supported: list[str] = []
+    if len(numeric_cols) >= 2:
+        supported.append("scatter")
+    if numeric_cols and group_cols:
+        supported.append("boxplot")
+    if bar_cols or categorical_cols:
+        supported.append("bar")
+
+    x_columns = list(dict.fromkeys([*numeric_cols, *group_cols, *bar_cols, *categorical_cols]))
+    color_cols = group_cols or [column for column in categorical_cols if df[column].nunique(dropna=True) <= 20]
+
+    return {
+        "all_columns": all_columns,
+        "available_x_columns": x_columns or all_columns,
+        "available_y_columns": numeric_cols or all_columns,
+        "available_group_columns": group_cols or categorical_cols[:25] or all_columns,
+        "color_columns": color_cols,
+        "datetime_columns": datetime_cols,
+        "categorical_columns": categorical_cols,
+        "bar_columns": bar_cols or categorical_cols[:25] or all_columns,
+        "supported_chart_types": supported or ["bar"],
+    }
+
+
+def align_chart_state_to_dataframe(state: dict[str, Any], df: pd.DataFrame) -> dict[str, Any]:
+    """Ensure chart state columns exist in the current dataframe."""
+    all_columns = list(df.columns)
+    aligned = dict(state)
+    for key in ("x_column", "y_column", "group_column"):
+        value = aligned.get(key)
+        if value and value not in all_columns:
+            aligned[key] = None
+    if aligned.get("chart_type") == "scatter":
+        if aligned.get("x_column") not in all_columns or aligned.get("y_column") not in all_columns:
+            numeric = get_ui_chart_column_options(df)["available_y_columns"]
+            aligned["x_column"] = numeric[0] if numeric else None
+            aligned["y_column"] = numeric[1] if len(numeric) > 1 else aligned.get("x_column")
+    return aligned
+
+
+def spec_to_chart_state(spec: dict[str, Any], df: pd.DataFrame | None = None) -> dict[str, Any]:
     """Convert an auto-selected chart spec into Streamlit chart control values."""
     chart_type = spec["type"]
     state = {
@@ -241,4 +425,6 @@ def spec_to_chart_state(spec: dict[str, Any]) -> dict[str, Any]:
         "y_column": spec.get("y"),
         "group_column": spec.get("x") if chart_type == "boxplot" else None,
     }
+    if df is not None:
+        return align_chart_state_to_dataframe(state, df)
     return state

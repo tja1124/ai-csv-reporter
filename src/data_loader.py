@@ -100,6 +100,43 @@ def load_csv(file_path: str | Path) -> pd.DataFrame:
     return df
 
 
+def sanitize_dataframe_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Fix blank and duplicate column names so pandas and Streamlit widgets work reliably.
+
+    Original messy names are not renamed when already unique and non-blank.
+    Duplicate columns receive stable suffixes (_2, _3). Blank headers become Column_N.
+
+    Returns:
+        Copy of the dataframe with safe column names, plus user-facing warnings.
+    """
+    warnings: list[str] = []
+    renamed = df.copy()
+    new_columns: list[str] = []
+    seen: dict[str, int] = {}
+
+    for index, column in enumerate(renamed.columns):
+        label = str(column).strip()
+        if not label or label.lower() == "nan" or label.startswith("Unnamed:"):
+            label = f"Column_{index + 1}"
+            warnings.append(f"Blank or missing header in column {index + 1} renamed to '{label}'.")
+
+        base_label = label
+        if label in seen:
+            seen[label] += 1
+            label = f"{base_label}_{seen[label]}"
+            warnings.append(f"Duplicate header '{base_label}' renamed to '{label}'.")
+        else:
+            seen[label] = 1
+
+        new_columns.append(label)
+
+    renamed.columns = new_columns
+    if warnings:
+        logger.info("Sanitized %d column name issue(s)", len(warnings))
+    return renamed, warnings
+
+
 def validate_dataframe(df: pd.DataFrame) -> list[str]:
     """
     Validate that a DataFrame is usable for analysis.

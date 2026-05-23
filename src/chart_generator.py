@@ -568,6 +568,60 @@ def get_recommended_charts(df: pd.DataFrame) -> list[dict[str, Any]]:
     return plan_charts(df)
 
 
+def chart_reason_for_spec(spec: dict[str, Any]) -> str:
+    """Public wrapper for chart recommendation rationale (Streamlit metadata panel)."""
+    return _chart_reason(spec)
+
+
+def chart_insight_for_spec(df: pd.DataFrame, spec: dict[str, Any]) -> str:
+    """Public wrapper for deterministic chart insight text."""
+    return _chart_insight_label(df, spec)
+
+
+def build_spec_from_ui(
+    df: pd.DataFrame,
+    chart_type: str,
+    *,
+    x_column: str | None = None,
+    y_column: str | None = None,
+    group_column: str | None = None,
+) -> dict[str, Any]:
+    """Build a chart spec dict from Streamlit control selections."""
+    if chart_type == "scatter":
+        corr = 0.0
+        if x_column and y_column and x_column in df.columns and y_column in df.columns:
+            x_vals = pd.to_numeric(df[x_column], errors="coerce")
+            y_vals = pd.to_numeric(df[y_column], errors="coerce")
+            valid = x_vals.notna() & y_vals.notna()
+            if valid.sum() >= 2:
+                corr = float(x_vals[valid].corr(y_vals[valid]))
+        return {"type": "scatter", "x": x_column, "y": y_column, "correlation": corr}
+    if chart_type == "boxplot":
+        return {"type": "boxplot", "x": group_column, "y": y_column}
+    return {"type": "bar", "column": x_column}
+
+
+def find_matching_recommended_spec(
+    recommended: list[dict[str, Any]],
+    chart_type: str,
+    *,
+    x_column: str | None = None,
+    y_column: str | None = None,
+    group_column: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a planner spec that matches the current UI chart selection, if any."""
+    for spec in recommended:
+        if spec.get("type") != chart_type:
+            continue
+        if chart_type == "scatter" and spec.get("x") == x_column and spec.get("y") == y_column:
+            return spec
+        if chart_type == "boxplot" and spec.get("x") == group_column and spec.get("y") == y_column:
+            return spec
+        if chart_type == "bar" and spec.get("column") == x_column:
+            return spec
+    return None
+
+
 def get_chart_skip_reasons(df: pd.DataFrame) -> list[str]:
     """Explain why certain visualizations were not selected."""
     reasons: list[str] = []
