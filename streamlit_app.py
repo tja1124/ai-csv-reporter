@@ -183,6 +183,33 @@ def _chart_preview_key(state: dict[str, Any]) -> str:
     return "chart_preview_" + hashlib.md5(sig.encode()).hexdigest()[:10]
 
 
+def _ensure_adv_key(widget_key: str, options: list[str], preferred: str | None) -> None:
+    """Guarantee the session-state entry for an advanced selectbox holds a valid option.
+
+    Called immediately before st.selectbox(..., key=widget_key) so that the index=
+    parameter can be omitted entirely.  When index= is omitted and the session-state
+    key already contains a valid choice, Streamlit uses that value without conflict.
+    Without this guard, Streamlit warns:
+
+        "The widget with key <key> was created with a default value but also had its
+         value set via the Session State API."
+
+    because _sync_adv_widgets_if_needed writes the key programmatically while the
+    widget simultaneously supplies index= as a secondary default.
+
+    Logic:
+    - If the key is already set to a value in options → leave it (preserve user edits
+      and sync-written values).
+    - Otherwise → initialise with preferred (the chart_state value), falling back to
+      the first available option so the widget is never in an undefined state.
+    """
+    if not options:
+        return
+    if st.session_state.get(widget_key) in options:
+        return  # already valid — nothing to do
+    st.session_state[widget_key] = preferred if preferred in options else options[0]
+
+
 def _sync_adv_widgets_if_needed(state: dict[str, Any], chart_type: str) -> None:
     """Push chart_state values into advanced-dropdown widget keys when an external
     change (pill click, shelf clear, gallery load, recommended-chart load) is detected.
@@ -417,50 +444,31 @@ def _render_chart_shelves(df: pd.DataFrame, state: dict[str, Any], options: dict
         if chart_type == "scatter":
             if not numeric_cols:
                 st.warning("No numeric columns detected.")
-            state["x_column"] = st.selectbox(
-                "X column",
-                numeric_cols or list(df.columns),
-                index=_safe_index(numeric_cols or list(df.columns), state.get("x_column")),
-                key="adv_scatter_x",
-            )
-            y_options = [c for c in (numeric_cols or list(df.columns)) if c != state.get("x_column")]
-            state["y_column"] = st.selectbox(
-                "Y column",
-                y_options or numeric_cols or list(df.columns),
-                index=_safe_index(y_options or numeric_cols or list(df.columns), state.get("y_column")),
-                key="adv_scatter_y",
-            )
+            x_opts = numeric_cols or list(df.columns)
+            _ensure_adv_key("adv_scatter_x", x_opts, state.get("x_column"))
+            state["x_column"] = st.selectbox("X column", x_opts, key="adv_scatter_x")
+
+            y_opts = [c for c in x_opts if c != st.session_state.get("adv_scatter_x")] or x_opts
+            _ensure_adv_key("adv_scatter_y", y_opts, state.get("y_column"))
+            state["y_column"] = st.selectbox("Y column", y_opts, key="adv_scatter_y")
+
             color_choices = ["None", *color_cols]
-            color_default = state.get("color_column") or "None"
-            if color_default not in color_choices:
-                color_default = "None"
-            color_pick = st.selectbox(
-                "Color by",
-                color_choices,
-                index=_safe_index(color_choices, color_default),
-                key="adv_scatter_color",
-            )
+            _ensure_adv_key("adv_scatter_color", color_choices, state.get("color_column") or "None")
+            color_pick = st.selectbox("Color by", color_choices, key="adv_scatter_color")
             state["color_column"] = None if color_pick == "None" else color_pick
         elif chart_type == "boxplot":
-            state["group_column"] = st.selectbox(
-                "Group by",
-                group_cols or list(df.columns),
-                index=_safe_index(group_cols or list(df.columns), state.get("group_column")),
-                key="adv_box_group",
-            )
-            state["y_column"] = st.selectbox(
-                "Y column",
-                numeric_cols or list(df.columns),
-                index=_safe_index(numeric_cols or list(df.columns), state.get("y_column")),
-                key="adv_box_y",
-            )
+            grp_opts = group_cols or list(df.columns)
+            _ensure_adv_key("adv_box_group", grp_opts, state.get("group_column"))
+            state["group_column"] = st.selectbox("Group by", grp_opts, key="adv_box_group")
+
+            y_opts_box = numeric_cols or list(df.columns)
+            _ensure_adv_key("adv_box_y", y_opts_box, state.get("y_column"))
+            state["y_column"] = st.selectbox("Y column", y_opts_box, key="adv_box_y")
         else:
-            state["x_column"] = st.selectbox(
-                "Category column",
-                bar_cols or list(df.columns),
-                index=_safe_index(bar_cols or list(df.columns), state.get("x_column")),
-                key="adv_bar_x",
-            )
+            bar_opts = bar_cols or list(df.columns)
+            _ensure_adv_key("adv_bar_x", bar_opts, state.get("x_column"))
+            state["x_column"] = st.selectbox("Category column", bar_opts, key="adv_bar_x")
+
             top_n = st.slider("Top categories", 3, 12, value=state.get("top_n", 8), key="adv_bar_top_n")
             sort_desc = st.toggle("Highest count first", value=state.get("sort_desc", True), key="adv_bar_sort")
 
